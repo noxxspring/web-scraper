@@ -1,149 +1,223 @@
 package com.example.webscraper;
 
-import org.jsoup.Connection;
+import com.example.webscraper.BrokenAndDuplicateLinks.BrokenLinkAndDuplicateTracker;
+import com.example.webscraper.LinkCategorization.CategorizedLinkDto;
+import com.example.webscraper.LinkCategorization.LinkCrawlAndCategorizationService;
+import com.example.webscraper.websocket.ProgressTracker;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
-import org.jsoup.select.Elements;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @Service
 public class WebScraperService {
+
+    @Autowired
+    private ProgressTracker progressTracker;
+
+    @Autowired
+    private LinkCrawlAndCategorizationService linkCrawlAndCategory;
+
+    @Autowired
+    private BrokenLinkAndDuplicateTracker brokenLinkAndDuplicateTracker;
+
     private static final int TIMEOUT = 10000; // 10 seconds
 
-    public Document scrape(String url) throws IOException {
+
+
+    public String generateSeoReport(String url, String scanId, String channelId) {
+        try {
+            // 🔹 Start SEO Meta Tag Scan
+            progressTracker.sendProgress(scanId, channelId, 10, "🔄 Starting SEO Meta Tag Scan...");
+            Thread.sleep(3000);
+
+            Document document = scrape(url);
+
+            progressTracker.sendProgress(scanId, channelId, 40, "🏷️ Extracting Meta Tags...");
+            Thread.sleep(3000);
+            MetaTagExtractor metaTagExtractor = new MetaTagExtractor(document);
+            Map<String, List<String>> metaTags = metaTagExtractor.extractMetaTags();
+
+            progressTracker.sendProgress(scanId, channelId, 80, "📊 Generating SEO Meta Tag Report...");
+            Thread.sleep(3000);
+            String seoMetaTagReport = generateMetaTagReport(url, metaTags);
+
+            progressTracker.sendProgress(scanId, channelId, 100, "✅ SEO Meta Tag Scan Completed!");
+            progressTracker.sendReport(scanId, channelId,"🏷️ **SEO Meta Tag Report**", seoMetaTagReport);
+            Thread.sleep(5000); // Wait before switching
+
+            // 🔹 Start Categorized Link Scan
+            progressTracker.sendProgress(scanId, channelId, 10, "🔄 Starting Categorized Link Scan...");
+            Thread.sleep(3000);
+
+            progressTracker.sendProgress(scanId, channelId, 40, "🔗 Scanning Links...");
+            Thread.sleep(3000);
+            CategorizedLinkDto categorizedLinks = linkCrawlAndCategory.categorizedLinkDto(document);
+
+            progressTracker.sendProgress(scanId, channelId, 80, "📊 Generating Categorized Link Report...");
+            Thread.sleep(3000);
+            String categorizedLinkReport = generateCategorizedLinkReport(url, categorizedLinks);
+
+            progressTracker.sendProgress(scanId, channelId, 100, "✅ Categorized Link Scan Completed!");
+            progressTracker.sendReport(scanId, channelId, "🔗 **Categorized Link Report**", categorizedLinkReport);
+            Thread.sleep(5000);
+
+            //start broken link and duplicate link scan
+            progressTracker.sendProgress(scanId, channelId, 10, "🔄 Starting Broken & Duplicate Links Scan...");
+            Thread.sleep(3000);
+
+            linkCrawlAndCategory.detectBrokenAndDuplicateLinks(scanId, channelId, categorizedLinks);
+
+            progressTracker.sendProgress(scanId, channelId, 50, "📊 Generating Broken & Duplicate Links Report...");
+            Thread.sleep(3000);
+
+            String brokenAndDuplicateLinksReport = brokenLinkAndDuplicateTracker.generateReport(url, scanId);
+
+            progressTracker.sendProgress(scanId, channelId, 100, "✅ Broken & Duplicate Links Scan Completed!");
+            progressTracker.sendReport(scanId, channelId, "❌ **Broken & Duplicate Links Report**", brokenAndDuplicateLinksReport);
+
+
+        } catch (IOException | IllegalArgumentException | InterruptedException e) {
+            progressTracker.sendProgress(scanId, channelId, 100, "❌ Scan Failed: " + e.getMessage());
+        }
+        return url;
+    }
+
+
+    Document scrape(String url) throws IOException {
         return Jsoup.connect(url).timeout(TIMEOUT).get();
     }
 
-    public List<String> findBrokenLinksWithLines(Document document) {
-        List<String> brokenLinks = new ArrayList<>();
-        Elements links = document.select("a[href]");
 
-        if (links.isEmpty()) {
-            brokenLinks.add("No links found on the page.");
-        }
-
-        links.forEach(link -> {
-            String url = link.absUrl("href");
-            int lineNumber = link.siblingIndex() + 1;
-            try {
-                Connection.Response response = Jsoup.connect(url).timeout(TIMEOUT).ignoreHttpErrors(true).execute();
-                if (response.statusCode() >= 400) {
-                    brokenLinks.add("Broken Link: " + url + " (Line: " + lineNumber + ", Status: " + response.statusCode() + ")");
-                }
-            } catch (IOException e) {
-                brokenLinks.add("Broken Link: " + url + " (Line: " + lineNumber + ", Error: " + e.getMessage() + ")");
-            }
+    private String generateMetaTagReport(String url, Map<String, List<String>> metaTags) {
+        StringBuilder report = new StringBuilder("🏷️ **SEO Meta Tag Report for:** " + url + "\n\n");
+        metaTags.forEach((category, tags) -> {
+            report.append(" ").append(category).append("\n");
+            tags.forEach(tag -> report.append("- ").append(tag).append("\n"));
+            report.append("\n");
         });
-
-        if (brokenLinks.isEmpty()) {
-            brokenLinks.add("No broken links found.");
-        }
-
-        return brokenLinks;
+        return report.toString();
     }
 
-    public List<String> checkMissingMetaTagsWithLines(Document document) {
-        List<String> missingTags = new ArrayList<>();
-        Elements metaTags = document.select("meta[name]");
 
-        if (metaTags.isEmpty()) {
-            missingTags.add("No meta tags found.");
+
+    private String generateCategorizedLinkReport(String url, CategorizedLinkDto categorizedLink) {
+        StringBuilder report = new StringBuilder("🔗 **Categorized Link Report for:** " + url + "\n\n");
+
+        report.append("\n- **Navigation Links:**\n");
+        if (categorizedLink.navigationLinks().isEmpty()) {
+            report.append("❌ No navigation links found.\n");
+        } else {
+            categorizedLink.navigationLinks().forEach(link -> report.append("- ").append(link).append("\n"));
         }
 
-        if (document.selectFirst("meta[name=description]") == null) {
-            missingTags.add("Missing Meta Tag: description (Line: Unknown)");
+        report.append("\n- **Footer Links:**\n");
+        if (categorizedLink.footerLinks().isEmpty()) {
+            report.append("❌ No footer links found.\n");
+        } else {
+            categorizedLink.footerLinks().forEach(link -> report.append("- ").append(link).append("\n"));
         }
 
-        if (document.selectFirst("meta[name=keywords]") == null) {
-            missingTags.add("Missing Meta Tag: keywords (Line: Unknown)");
+        report.append("\n- **Sidebar Links:**\n");
+        if (categorizedLink.sidebarLinks().isEmpty()) {
+            report.append("❌ No sidebar links found.\n");
+        } else {
+            categorizedLink.sidebarLinks().forEach(link -> report.append("- ").append(link).append("\n"));
         }
 
-        if (missingTags.isEmpty()) {
-            missingTags.add("No missing meta tags found.");
+        report.append("\n- **Breadcrumb Links:**\n");
+        if (categorizedLink.breadcrumbLinks().isEmpty()) {
+            report.append("❌ No breadcrumb links found.\n");
+        } else {
+            categorizedLink.breadcrumbLinks().forEach(link -> report.append("- ").append(link).append("\n"));
         }
 
-        return missingTags;
+        report.append("\n- **Outbound Links:**\n");
+        if (categorizedLink.outboundLinks().isEmpty()) {
+            report.append("❌ No outbound links found.\n");
+        } else {
+            categorizedLink.outboundLinks().forEach(link -> report.append("- ").append(link).append("\n"));
+        }
+
+        report.append("\n- **Backlinks:**\n");
+        if (categorizedLink.backlinks().isEmpty()) {
+            report.append("❌ No backlinks found.\n");
+        } else {
+            categorizedLink.backlinks().forEach(link -> report.append("- ").append(link).append("\n"));
+        }
+
+        report.append("\n- **Affiliate Links:**\n");
+        if (categorizedLink.affiliateLinks().isEmpty()) {
+            report.append("❌ No affiliate links found.\n");
+        } else {
+            categorizedLink.affiliateLinks().forEach(link -> report.append("- ").append(link).append("\n"));
+        }
+
+        report.append("\n- **Social Media Links:**\n");
+        if (categorizedLink.socialMediaLinks().isEmpty()) {
+            report.append("❌ No social media links found.\n");
+        } else {
+            categorizedLink.socialMediaLinks().forEach(link -> report.append("- ").append(link).append("\n"));
+        }
+
+        return report.toString();
     }
 
-    public List<String> findImagesWithIssuesAndLines(Document document) {
-        List<String> imageIssues = new ArrayList<>();
-        Elements images = document.select("img");
 
-        if (images.isEmpty()) {
-            imageIssues.add("No images found on the page.");
-            return imageIssues;
+
+    private class MetaTagExtractor {
+        private final Document document;
+
+        public MetaTagExtractor(Document document) {
+            this.document = document;
         }
 
-        images.forEach(img -> {
-            String src = img.absUrl("src");
-            String alt = img.attr("alt");
-            int lineNumber = img.siblingIndex() + 1;
+        public Map<String, List<String>> extractMetaTags() {
+            Map<String, List<String>> metaTags = new LinkedHashMap<>();
 
-            if (src.isBlank()) {
-                imageIssues.add("Image Issue: Empty src attribute (Line: " + lineNumber + ")");
+            // Core SEO Tags 🔍
+            metaTags.put("🔍 *Core SEO Tags*", List.of(
+                    formatTag("📖 **Title Tag**", document.selectFirst("title"), "<title>Your Page Title</title>"),
+                    formatTag("📝 **Meta Description**", document.selectFirst("meta[name=description]"), "<meta name='description' content='Brief summary of the page'>"),
+                    formatTag("🔑 **Meta Keywords**", document.selectFirst("meta[name=keywords]"), "<meta name='keywords' content='keyword1, keyword2'>")
+            ));
+
+            // Crawling & Indexing Tags 🕷️
+            metaTags.put("🕷️ *Crawling & Indexing Tags*", List.of(
+                    formatTag("🤖 **Meta Robots**", document.selectFirst("meta[name=robots]"), "<meta name='robots' content='index, follow'>"),
+                    formatTag("🔗 **Canonical Tag**", document.selectFirst("link[rel=canonical]"), "<link rel='canonical' href='https://example.com/page'>")
+            ));
+
+            // Social Media Tags 📢
+            metaTags.put("📢 *Social Media Tags*", List.of(
+                    formatTag("📌 **Open Graph Title**", document.selectFirst("meta[property=og:title]"), "<meta property='og:title' content='Your Open Graph Title'>"),
+                    formatTag("📌 **Open Graph Description**", document.selectFirst("meta[property=og:description]"), "<meta property='og:description' content='Your Open Graph Description'>"),
+                    formatTag("🖼️ **Open Graph Image**", document.selectFirst("meta[property=og:image]"), "<meta property='og:image' content='https://example.com/image.jpg'>"),
+                    formatTag("🐦 **Twitter Card**", document.selectFirst("meta[name=twitter:card]"), "<meta name='twitter:card' content='summary_large_image'>")
+            ));
+
+            // Author & Mobile Optimization 📱
+            metaTags.put("📱 *Author & Mobile Optimization*", List.of(
+                    formatTag("✍️ **Meta Author**", document.selectFirst("meta[name=author]"), "<meta name='author' content='Your Name'>"),
+                    formatTag("📱 **Meta Viewport**", document.selectFirst("meta[name=viewport]"), "<meta name='viewport' content='width=device-width, initial-scale=1.0'>")
+            ));
+
+            return metaTags;
+        }
+
+        private String formatTag(String tagName, Element element, String exampleStructure) {
+            if (element != null) {
+                String content = element.tagName().equalsIgnoreCase("title") ? element.text() : element.attr("content");
+                return tagName + " -> " + (content.isEmpty() ? "(No content found)" : content);
             } else {
-                try {
-                    Connection.Response response = Jsoup.connect(src).timeout(TIMEOUT).ignoreHttpErrors(true).execute();
-                    if (response.statusCode() >= 400) {
-                        imageIssues.add("Broken Image: View Image (" + src + ") — Line: " + lineNumber + ", Status: " + response.statusCode());
-                    }
-                } catch (IOException e) {
-                    imageIssues.add("Broken Image: View Image (" + src + ") — Line: " + lineNumber + ", Error: " + e.getMessage());
-                }
+                return tagName + " -> (Missing)\n  # Quick Fix --> " + exampleStructure + "\n";
             }
-
-            if (alt == null || alt.isBlank()) {
-                imageIssues.add("Missing Alt Attribute: View Image (" + src + ") — Line: " + lineNumber);
-            }
-        });
-
-        if (imageIssues.isEmpty()) {
-            imageIssues.add("All images are valid with alt attributes.");
         }
-
-        return imageIssues;
     }
-
-    public List<String> findDuplicateMetaTagsWithLines(Document document) {
-        Map<String, Integer> metaTagCounts = new HashMap<>();
-        List<String> duplicateMetaTags = new ArrayList<>();
-        Elements metaTags = document.select("meta[name]");
-
-        if (metaTags.isEmpty()) {
-            duplicateMetaTags.add("No meta tags found.");
-        }
-
-        metaTags.forEach(tag -> {
-            String metaName = tag.attr("name");
-            int lineNumber = tag.siblingIndex() + 1;
-            metaTagCounts.put(metaName, metaTagCounts.getOrDefault(metaName, 0) + 1);
-
-            if (metaTagCounts.get(metaName) > 1) {
-                duplicateMetaTags.add("Duplicate Meta Tag: " + metaName + " (Line: " + lineNumber + ")");
-            }
-        });
-
-        if (duplicateMetaTags.isEmpty()) {
-            duplicateMetaTags.add("No duplicate meta tags found.");
-        }
-
-        return duplicateMetaTags;
-    }
-    public String checkTitleTagWithLine(Document document) {
-        Element titleTag = document.selectFirst("title");
-        if (titleTag == null) {
-            return "Title tag is missing (Line: Unknown)";
-        }
-        int lineNumber = titleTag.siblingIndex() + 1;
-        return "Title tag is present (Line: " + lineNumber + ")";
-    }
-
 }
+
 

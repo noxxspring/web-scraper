@@ -4,8 +4,8 @@ import java.util.List;
 
 public class MonitorPayload {
     private String url;
-    private String channelId;
-    private String returnUrl;
+    private String channelId = "019582d6-476b-7d12-8721-37f9ebf858b4";
+
 
     public String getUrl() {
         return url;
@@ -21,14 +21,6 @@ public class MonitorPayload {
 
     public void setChannelId(String channelId) {
         this.channelId = channelId;
-    }
-
-    public String getReturnUrl() {
-        return returnUrl;
-    }
-
-    public void setReturnUrl(String returnUrl) {
-        this.returnUrl = returnUrl;
     }
 
 

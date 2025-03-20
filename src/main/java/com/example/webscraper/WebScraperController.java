@@ -1,5 +1,7 @@
 package com.example.webscraper;
 
+import com.example.webscraper.Bot.Bot;
+import com.example.webscraper.Bot.TelexEvent;
 import org.jsoup.nodes.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,10 +14,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @RestController
 public class WebScraperController {
@@ -67,10 +66,12 @@ public class WebScraperController {
     private static final Logger logger = LoggerFactory.getLogger(WebScraperController.class);
     private final TelexNotifier telexNotifier;
     private final WebScraperService webScraperService;
+    private final Bot bot;
 
-    public WebScraperController(TelexNotifier telexNotifier, WebScraperService webScraperService) {
+    public WebScraperController(TelexNotifier telexNotifier, WebScraperService webScraperService, Bot bot) {
         this.telexNotifier = telexNotifier;
         this.webScraperService = webScraperService;
+        this.bot = bot;
     }
 
     @GetMapping("/integration.json")
@@ -125,70 +126,47 @@ public class WebScraperController {
 
     @PostMapping("/scrape")
     public ResponseEntity<String> scrapeWebsite(@RequestBody MonitorPayload payload) {
+        String url = payload.getUrl();
+        String scanId = UUID.randomUUID().toString(); // generate a unique scan Id
         try {
-            Document document = webScraperService.scrape(payload.getUrl());
+
+            Document document = webScraperService.scrape(url);
             if (document == null) {
-                logger.error("Failed to scrape content from: {}", payload.getUrl());
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to scrape content from: " + payload.getUrl());
+                logger.error("Failed to scrape content from: {}", url);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to scrape content from: " + url);
             }
+            String seoReport = webScraperService.generateSeoReport(url,scanId, payload.getChannelId());
+            // Send report to Telex
+            telexNotifier.sendToTelex(payload.getChannelId(), seoReport);
+            logger.info("Sent detailed SEO report to Telex: \n{}", seoReport);
 
-            List<String> brokenLinks = webScraperService.findBrokenLinksWithLines(document);
-            List<String> missingMetaTags = webScraperService.checkMissingMetaTagsWithLines(document);
-            List<String> imageIssues = webScraperService.findImagesWithIssuesAndLines(document);
-            List<String> duplicateMetaTags = webScraperService.findDuplicateMetaTagsWithLines(document);
-            boolean isTitleTagMissing = Boolean.parseBoolean(webScraperService.checkTitleTagWithLine(document));
-
-
-            StringBuilder message = new StringBuilder("Scraping completed for " + payload.getUrl() + "\n\n");
-
-            message.append("=== Issues Found ===\n");
-
-            message.append("Broken Links:\n");
-            brokenLinks.forEach(link -> message.append("- " + link + "\n"));
-            if (brokenLinks.isEmpty()) {
-                message.append("No broken links found.\n");
-            }
-            message.append("\n");
-
-            message.append("Missing Meta Tags:\n");
-            missingMetaTags.forEach(tag -> message.append("- " + tag + "\n"));
-            if (missingMetaTags.isEmpty()) {
-                message.append("No missing meta tags found.\n");
-            }
-            message.append("\n");
-
-            message.append("Image Issues:\n");
-            imageIssues.forEach(issue -> message.append("- " + issue + "\n"));
-            if (imageIssues.isEmpty()) {
-                message.append("No image issues found.\n");
-            }
-            message.append("\n");
-
-            message.append("Duplicate Meta Tags:\n");
-            duplicateMetaTags.forEach(tag -> message.append("- " + tag + "\n"));
-            if (duplicateMetaTags.isEmpty()) {
-                message.append("No duplicate meta tags found.\n");
-            }
-            message.append("\n");
-
-            if (isTitleTagMissing) {
-                message.append("Title tag is missing.\n");
-            } else {
-                message.append("Title tag is present.\n");
-            }
-
-
-            telexNotifier.sendToTelex(payload.getChannelId(), payload.getUrl(), brokenLinks, missingMetaTags, imageIssues, message.toString());
-            logger.info("Success notification sent to Telex for Channel ID: {}", payload.getChannelId());
-            return ResponseEntity.ok("scraped report sent to Telex.");
+            return ResponseEntity.ok("Scraped SEO report sent to Telex.");
         } catch (IOException e) {
-            logger.error("Failed to send audit report: {}", e.getMessage());
+            logger.error("Failed to send SEO report: {}", e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Failed to send scraped report: " + e.getMessage());
         }
     }
 
+    @PostMapping("/webhook/telex")
+    public ResponseEntity<Void> handleWebhook(@RequestBody Map<String,String> payload) {
 
+        String text = payload.get("text");
+        String channelId = payload.get("channel_id"); // Extract channel ID
+
+        if (text != null) {
+            TelexEvent telex = new TelexEvent();
+            telex.setText(text);
+            telex.setChannelId(channelId != null ? channelId : "default-channel-id"); // Ensure channelId is never null
+
+            bot.handleEvent(telex);
+        }
+
+        return ResponseEntity.ok().build();
+    }
 }
+
+
+
 
 
 
